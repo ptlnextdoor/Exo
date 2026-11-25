@@ -512,7 +512,8 @@ impl Mailbox {
         Ok(())
     }
 
-    fn check_modifiable(&self, add: &[String], remove: &[String]) -> Result<()> {
+    /// Whether `messages.modify` would accept these labels.
+    pub fn check_modifiable(&self, add: &[String], remove: &[String]) -> Result<()> {
         for label in add.iter().chain(remove) {
             self.require_label(label)?;
             if labels::is_immutable(label) {
@@ -656,6 +657,19 @@ impl Mailbox {
     pub fn draft(&self, id: &str) -> Result<&StoredMessage> {
         let message = self.drafts.get(id).ok_or_else(Failure::not_found)?;
         self.message(message)
+    }
+
+    /// Puts back a draft under the ID it had, after a send that did not go through.
+    pub fn restore_draft(
+        &mut self,
+        id: &str,
+        raw: Vec<u8>,
+        thread_id: Option<String>,
+        now: i64,
+    ) -> Result<()> {
+        let message = self.insert_draft_message(raw, thread_id, now)?;
+        self.drafts.insert(id.to_owned(), message);
+        Ok(())
     }
 
     pub fn create_draft(
