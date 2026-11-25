@@ -33,7 +33,7 @@ pub struct Header {
     pub header: Vec<u8>,
 }
 
-/// Reads of a mailbox. A call that needs a folder uses the one last `select`ed.
+/// A mailbox and the way out of it. A call that needs a folder uses the one last `select`ed.
 pub trait Mailstore: Send {
     fn folders(&mut self) -> impl Future<Output = Result<Vec<FolderInfo>>> + Send;
 
@@ -52,4 +52,43 @@ pub trait Mailstore: Send {
 
     /// The whole message, without marking it read.
     fn body(&mut self, uid: u32) -> impl Future<Output = Result<Vec<u8>>> + Send;
+
+    /// Message UIDs of the selected folder that match an IMAP `SEARCH` query.
+    fn search(&mut self, query: &str) -> impl Future<Output = Result<Vec<u32>>> + Send;
+
+    fn create(&mut self, folder: &str) -> impl Future<Output = Result<()>> + Send;
+
+    /// Adds and removes flags on messages of the selected folder.
+    fn store_flags(
+        &mut self,
+        uids: &[u32],
+        add: &[String],
+        remove: &[String],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Moves messages of the selected folder to `to`. Returns the headers of what arrived there,
+    /// which are more than the moved messages when mail came in meanwhile.
+    fn move_to(
+        &mut self,
+        uids: &[u32],
+        to: &str,
+    ) -> impl Future<Output = Result<Vec<Header>>> + Send;
+
+    /// Removes messages of the selected folder for good.
+    fn expunge(&mut self, uids: &[u32]) -> impl Future<Output = Result<()>> + Send;
+
+    fn append(
+        &mut self,
+        folder: &str,
+        flags: &[String],
+        raw: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Hands `raw` to the outgoing server for `recipients`, from `sender`.
+    fn submit(
+        &mut self,
+        sender: &str,
+        recipients: &[String],
+        raw: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
 }

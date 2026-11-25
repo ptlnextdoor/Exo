@@ -129,3 +129,19 @@ pub fn message_labels(
     }
     labels
 }
+
+/// The flags Exo's labels stand for, each with whether the message should carry it: the inverse
+/// of [`message_labels`]'s flag half. Flags it does not list (`\Answered`...) are left alone.
+pub fn wanted_flags(labels: &BTreeSet<String>, hidden: &[String]) -> Vec<(&'static str, bool)> {
+    let mut flags = vec![
+        ("\\Seen", !labels.contains("UNREAD")),
+        ("\\Flagged", labels.contains("STARRED")),
+    ];
+    flags.extend(
+        KEYWORDS
+            .iter()
+            .zip(hidden.iter().skip(1))
+            .map(|(keyword, id)| (*keyword, labels.contains(id))),
+    );
+    flags
+}

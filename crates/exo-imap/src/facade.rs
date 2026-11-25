@@ -19,6 +19,10 @@ use crate::index::{FolderRow, Index, MessageRow};
 use crate::labels::{self, HIDDEN, Role};
 use crate::mailstore::{FolderInfo, FolderState, Header, Mailstore};
 
+mod search;
+mod writes;
+pub use writes::{Draft, Failed, Writer};
+
 /// Where a new mailbox's history starts.
 const HISTORY_START: u64 = 1_000;
 
@@ -182,6 +186,11 @@ impl<S: Mailstore> Facade<S> {
         Ok(report)
     }
 
+    /// Takes the facade for a write: no sync or other write runs until the [`Writer`] is dropped.
+    pub async fn writer(&self) -> Writer<'_, S> {
+        Writer::new(self.state.lock().await, &self.engine)
+    }
+
     /// Makes the engine hold the full text of `ids`, fetching what it only has headers of.
     pub async fn load_bodies(&self, ids: &[String]) -> Result<()> {
         let missing: Vec<&String> = {
@@ -196,6 +205,9 @@ impl<S: Mailstore> Facade<S> {
             let Some(row) = state.index.message(id)? else {
                 continue;
             };
+            if row.uid_validity == 0 {
+                continue; // Sent and not yet on the server: the engine has all of it.
+            }
             let folder = state.store.select(&row.folder).await?;
             if folder.uid_validity != row.uid_validity {
                 bail!(
@@ -243,7 +255,35 @@ fn folder_labels(
 }
 
 impl<S: Mailstore> State<S> {
+    /// Saves the history the mailbox made since the last save, inside the open transaction.
+    fn persist_history(&self, mailbox: &mut Mailbox, first_pass: bool) -> Result<()> {
+        if first_pass {
+            // Nobody has seen the history of the first ingest, so it needs no keeping.
+            mailbox.history.expire();
+        } else {
+            let persisted = self
+                .index
+                .meta("history_current")?
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(HISTORY_START);
+            let fresh: Vec<_> = mailbox
+                .history
+                .since(persisted)
+                .map(|records| records.cloned().collect())
+                .unwrap_or_default();
+            self.index.save_history(&fresh)?;
+        }
+        self.index
+            .set_meta("history_floor", &mailbox.history.floor().to_string())?;
+        self.index
+            .set_meta("history_current", &mailbox.history.current().to_string())?;
+        Ok(())
+    }
+
     async fn pass(&mut self, engine: &Engine) -> Result<Report> {
+        if let Err(error) = self.settle_pending().await {
+            log::warn!("sent mail is still not on the server: {error:#}");
+        }
         let listed = self.store.folders().await?;
         self.register(engine, &listed)?;
         let folders = self.index.folders()?;
@@ -359,11 +399,6 @@ impl<S: Mailstore> State<S> {
             )
         };
         let first_pass = self.index.meta("history_current")?.is_none();
-        let persisted = self
-            .index
-            .meta("history_current")?
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(HISTORY_START);
 
         // Messages that left one folder and showed up in another in this pass were moved.
         let mut vanished: HashMap<Vec<u8>, Vec<MessageRow>> = HashMap::new();
@@ -464,21 +499,7 @@ impl<S: Mailstore> State<S> {
                 report.deleted += 1;
             }
 
-            if first_pass {
-                // Nobody has seen the history of the first ingest, so it needs no keeping.
-                mailbox.history.expire();
-            } else {
-                let fresh: Vec<_> = mailbox
-                    .history
-                    .since(persisted)
-                    .map(|records| records.cloned().collect())
-                    .unwrap_or_default();
-                self.index.save_history(&fresh)?;
-            }
-            self.index
-                .set_meta("history_floor", &mailbox.history.floor().to_string())?;
-            self.index
-                .set_meta("history_current", &mailbox.history.current().to_string())?;
+            self.persist_history(mailbox, first_pass)?;
             for f in &found {
                 if let Some(state) = &f.state {
                     self.index.set_folder_state(&f.folder, state)?;

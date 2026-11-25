@@ -288,7 +288,7 @@ async fn a_server_that_is_down_leaves_the_mailbox_alone() {
 }
 
 #[tokio::test]
-async fn only_the_app_may_read_and_only_to_read() {
+async fn only_the_app_may_use_it_and_only_for_mail() {
     let fake = seeded();
     let served = serve(open(&fake, None)).await;
     served.facade.sync().await.unwrap();
@@ -315,11 +315,22 @@ async fn only_the_app_may_read_and_only_to_read() {
         403,
         "a web page"
     );
-    let modify = format!("{}/gmail/v1/users/me/threads/x/modify", served.origin);
+    // Mail changes are the app's to make; settings and labels are not.
+    let filters = format!("{}/gmail/v1/users/me/settings/filters", served.origin);
     assert_eq!(
-        status(http.post(&modify).bearer_auth(TOKEN).body("{}")).await,
+        status(http.post(&filters).bearer_auth(TOKEN).body("{}")).await,
         403,
-        "writes"
+        "filters"
+    );
+    let label = format!("{}/gmail/v1/users/me/labels", served.origin);
+    assert_eq!(
+        status(http.post(&label).bearer_auth(TOKEN).body("{}")).await,
+        403
+    );
+    assert_eq!(
+        status(http.post(&filters).body("{}")).await,
+        401,
+        "no token"
     );
     let admin = format!("{}/__mock/reset", served.origin);
     assert_eq!(status(http.post(&admin).bearer_auth(TOKEN)).await, 403);

@@ -4,7 +4,7 @@ mod support;
 
 use std::time::Duration;
 
-use exo_store::{ListId, Options, Store};
+use exo_store::{ListId, Mutation, Options, Store};
 use gmail::{Endpoints, StaticToken};
 use support::{ACCOUNT, Fake, TOKEN, mail, open, serve};
 
@@ -118,4 +118,58 @@ async fn the_store_syncs_reads_and_survives_a_restart() {
     let inbox = store.list(&ListId::Inbox, None, 10).await.unwrap().threads;
     assert_eq!(inbox.len(), 3);
     assert_eq!(inbox[0].subject, "Later");
+}
+
+#[tokio::test]
+async fn the_stores_actions_reach_the_server() {
+    let fake = Fake::new();
+    fake.deliver(
+        "INBOX",
+        mail(
+            "Priya <priya@example.com>",
+            "Launch",
+            "a@x",
+            None,
+            "Ship it?",
+        ),
+        &[],
+        T0,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let served = serve(open(&fake, None)).await;
+    let store = open_store(dir.path(), &served.origin).await;
+    sync_all(&store).await;
+    let inbox = store.list(&ListId::Inbox, None, 10).await.unwrap().threads;
+    let thread = inbox[0].id.clone();
+
+    // Starred, read and done, as the keys `s`, `u` and `e` do.
+    for mutation in [Mutation::Star, Mutation::MarkRead, Mutation::MarkDone] {
+        store
+            .apply(std::slice::from_ref(&thread), mutation)
+            .await
+            .unwrap();
+    }
+    let report = store.flush().await.unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    {
+        let server = fake.server();
+        assert!(server.folders["INBOX"].messages.is_empty());
+        let archived: Vec<_> = server.folders["Archive"].messages.values().collect();
+        assert_eq!(archived.len(), 1);
+        assert!(archived[0].flags.contains(&"\\Flagged".to_owned()));
+        assert!(archived[0].flags.contains(&"\\Seen".to_owned()));
+    }
+
+    // What the server now holds is what the store holds: a sync changes nothing.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let report = sync_all(&store).await;
+    assert!(!report.rebuilt);
+    assert!(
+        store
+            .list(&ListId::Inbox, None, 10)
+            .await
+            .unwrap()
+            .threads
+            .is_empty()
+    );
 }

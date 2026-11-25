@@ -36,6 +36,12 @@ pub struct Server {
     pub body_fetches: usize,
     /// Fail every request, as a dropped connection does.
     pub down: bool,
+    /// Fail every send, as an outgoing server that is down does.
+    pub smtp_down: bool,
+    /// What the outgoing server took: sender, recipients, message.
+    pub outbox: Vec<(String, Vec<String>, Vec<u8>)>,
+    /// What the server's own `SEARCH` calls were.
+    pub searches: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -67,6 +73,9 @@ impl Fake {
             condstore: true,
             body_fetches: 0,
             down: false,
+            smtp_down: false,
+            outbox: Vec::new(),
+            searches: Vec::new(),
         })))
     }
 
@@ -219,22 +228,7 @@ impl Mailstore for FakeStore {
     }
 
     async fn headers(&mut self, uids: &[u32]) -> Result<Vec<Header>> {
-        self.with(|server, folder| {
-            Ok(uids
-                .iter()
-                .filter_map(|uid| {
-                    let message = server.folders[folder].messages.get(uid)?;
-                    let end = message.raw.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
-                    Some(Header {
-                        uid: *uid,
-                        flags: message.flags.clone(),
-                        internal_date: message.internal_date,
-                        size: message.raw.len() as u32,
-                        header: message.raw[..end].to_vec(),
-                    })
-                })
-                .collect())
-        })
+        self.with(|server, folder| Ok(headers_of(&server.folders[folder], uids)))
     }
 
     async fn flags(&mut self, changed_since: Option<u64>) -> Result<Vec<(u32, Vec<String>)>> {
@@ -258,6 +252,131 @@ impl Mailstore for FakeStore {
                 .ok_or_else(|| anyhow!("gone"))
         })
     }
+
+    async fn search(&mut self, query: &str) -> Result<Vec<u32>> {
+        self.with(|server, folder| {
+            server.searches.push(format!("{folder}: {query}"));
+            // `HEADER Message-ID "x"` and `TEXT "x"`, the two the facade asks.
+            let (field, needle) = match query.split_once(" \"") {
+                Some((field, rest)) => (field, rest.trim_end_matches('"')),
+                None => return Err(anyhow!("unsupported search {query}")),
+            };
+            let text = |raw: &[u8]| String::from_utf8_lossy(raw).to_lowercase();
+            Ok(server.folders[folder]
+                .messages
+                .iter()
+                .filter(|(_, m)| {
+                    let text = text(&m.raw);
+                    match field {
+                        "HEADER Message-ID" => {
+                            text.contains(&format!("<{}>", needle.to_lowercase()))
+                        }
+                        _ => text.contains(&needle.to_lowercase()),
+                    }
+                })
+                .map(|(uid, _)| *uid)
+                .collect())
+        })
+    }
+
+    async fn create(&mut self, name: &str) -> Result<()> {
+        let mut server = self.server.lock().unwrap();
+        server.folders.entry(name.to_owned()).or_insert(Folder {
+            attributes: Vec::new(),
+            uid_validity: 1,
+            uid_next: 1,
+            messages: BTreeMap::new(),
+        });
+        Ok(())
+    }
+
+    async fn store_flags(&mut self, uids: &[u32], add: &[String], remove: &[String]) -> Result<()> {
+        self.with(|server, folder| {
+            server.modseq += 1;
+            let modseq = server.modseq;
+            for uid in uids {
+                let message = server
+                    .folders
+                    .get_mut(folder)
+                    .unwrap()
+                    .messages
+                    .get_mut(uid)
+                    .ok_or_else(|| anyhow!("no message {uid}"))?;
+                message.flags.retain(|f| !remove.contains(f));
+                for flag in add {
+                    if !message.flags.contains(flag) {
+                        message.flags.push(flag.clone());
+                    }
+                }
+                message.modseq = modseq;
+            }
+            Ok(())
+        })
+    }
+
+    async fn move_to(&mut self, uids: &[u32], to: &str) -> Result<Vec<Header>> {
+        let from = self
+            .selected
+            .clone()
+            .ok_or_else(|| anyhow!("nothing selected"))?;
+        let fake = Fake(self.server.clone());
+        if fake.server().down {
+            return Err(anyhow!("connection lost"));
+        }
+        let moved: Vec<u32> = uids.iter().map(|uid| fake.mv(&from, *uid, to)).collect();
+        let server = self.server.lock().unwrap();
+        Ok(headers_of(&server.folders[to], &moved))
+    }
+
+    async fn expunge(&mut self, uids: &[u32]) -> Result<()> {
+        let selected = self
+            .selected
+            .clone()
+            .ok_or_else(|| anyhow!("nothing selected"))?;
+        if self.server.lock().unwrap().down {
+            return Err(anyhow!("connection lost"));
+        }
+        for uid in uids {
+            Fake(self.server.clone()).expunge(&selected, *uid);
+        }
+        Ok(())
+    }
+
+    async fn append(&mut self, folder: &str, flags: &[String], raw: &[u8]) -> Result<()> {
+        if self.server.lock().unwrap().down {
+            return Err(anyhow!("connection lost"));
+        }
+        let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+        Fake(self.server.clone()).deliver(folder, raw.to_vec(), &flags, 1_763_370_000_000);
+        Ok(())
+    }
+
+    async fn submit(&mut self, sender: &str, recipients: &[String], raw: &[u8]) -> Result<()> {
+        let mut server = self.server.lock().unwrap();
+        if server.smtp_down {
+            return Err(anyhow!("451 try again later"));
+        }
+        server
+            .outbox
+            .push((sender.to_owned(), recipients.to_vec(), raw.to_vec()));
+        Ok(())
+    }
+}
+
+fn headers_of(folder: &Folder, uids: &[u32]) -> Vec<Header> {
+    uids.iter()
+        .filter_map(|uid| {
+            let message = folder.messages.get(uid)?;
+            let end = message.raw.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+            Some(Header {
+                uid: *uid,
+                flags: message.flags.clone(),
+                internal_date: message.internal_date,
+                size: message.raw.len() as u32,
+                header: message.raw[..end].to_vec(),
+            })
+        })
+        .collect()
 }
 
 /// A plain-text message.

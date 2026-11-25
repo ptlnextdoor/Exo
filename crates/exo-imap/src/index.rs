@@ -175,9 +175,16 @@ impl Index {
         self.query_messages("", [], "header")
     }
 
-    /// A folder's messages without their headers, which a pass has no need of.
+    /// A folder's messages without their headers, which a pass has no need of. Mail that is sent
+    /// but not yet on the server is not among them.
     pub fn messages_in(&self, folder: &str) -> Result<Vec<MessageRow>> {
-        self.query_messages("WHERE folder = ?", [folder], "x''")
+        self.query_messages("WHERE folder = ? AND uid_validity != 0", [folder], "x''")
+    }
+
+    /// Sent mail the server has no copy of yet. It has `uid_validity` 0, which no server uses,
+    /// and the whole message in `header`.
+    pub fn pending(&self) -> Result<Vec<MessageRow>> {
+        self.query_messages("WHERE uid_validity = 0", [], "header")
     }
 
     pub fn message(&self, id: &str) -> Result<Option<MessageRow>> {
@@ -244,6 +251,14 @@ impl Index {
         self.db.execute(
             "UPDATE messages SET folder = ?, uid = ?, uid_validity = ?, flags = ? WHERE id = ?",
             params![folder, uid, uid_validity, serde_json::to_string(flags)?, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_header(&self, id: &str, header: &[u8]) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET header = ? WHERE id = ?",
+            params![header, id],
         )?;
         Ok(())
     }

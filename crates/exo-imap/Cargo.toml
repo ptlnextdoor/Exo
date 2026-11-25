@@ -22,6 +22,7 @@ getrandom = { workspace = true }
 gmail = { workspace = true }
 gmail-mock = { workspace = true }
 jiff = { workspace = true }
+lettre = { workspace = true }
 log = { workspace = true }
 rusqlite = { workspace = true }
 rustls-platform-verifier = { workspace = true }
@@ -30,6 +31,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-rustls = { workspace = true }
 tower = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 exo-store = { workspace = true }
