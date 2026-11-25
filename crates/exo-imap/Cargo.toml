@@ -1,0 +1,37 @@
+[package]
+name = "exo-imap"
+description = "A Gmail API facade over an IMAP mailbox: serves what exo-store asks of Gmail from a local index kept in sync with the server."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "exo-imap"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-imap = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+futures = { workspace = true }
+getrandom = { workspace = true }
+gmail = { workspace = true }
+gmail-mock = { workspace = true }
+jiff = { workspace = true }
+log = { workspace = true }
+rusqlite = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls = { workspace = true }
+tower = { workspace = true }
+
+[dev-dependencies]
+exo-store = { workspace = true }
+reqwest = { workspace = true }
+tempfile = { workspace = true }
