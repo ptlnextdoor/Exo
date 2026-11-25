@@ -63,7 +63,7 @@ async fn delay(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
 
 /// Google pretty-prints JSON unless `prettyPrint=false`, applies `fields` to successful
 /// responses, and always labels JSON as UTF-8.
-async fn format_json(request: Request, next: Next) -> Response {
+pub(crate) async fn format_json(request: Request, next: Next) -> Response {
     let params = Params::parse(request.uri().query().unwrap_or_default());
     let response = next.run(request).await;
     let is_json = response

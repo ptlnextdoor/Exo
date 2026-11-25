@@ -70,6 +70,18 @@ impl StoredMessage {
     }
 }
 
+/// A message a backing store kept: [`Mailbox::restore`] puts it back as it was.
+#[derive(Debug, Clone)]
+pub struct Restored {
+    pub id: String,
+    pub thread_id: String,
+    pub labels: BTreeSet<String>,
+    /// Epoch milliseconds.
+    pub internal_date: i64,
+    pub history_id: u64,
+    pub raw: Vec<u8>,
+}
+
 /// A message to add.
 #[derive(Debug, Clone)]
 pub struct NewMessage {
@@ -398,14 +410,48 @@ impl Mailbox {
         }
         message.labels = label_ids.into_iter().collect();
 
-        let thread = self.threads.entry(thread_id.clone()).or_default();
-        let position =
-            thread.partition_point(|other| self.messages[other].sort_key() <= message.sort_key());
-        thread.insert(position, id.clone());
         let labels = message.labels.iter().cloned().collect();
-        self.messages.insert(id.clone(), message);
+        self.place(message);
         self.record(&id, labels, Change::MessageAdded);
         Ok(id)
+    }
+
+    /// Files `message` under its thread, oldest first, and stores it.
+    fn place(&mut self, message: StoredMessage) {
+        let thread = self.threads.entry(message.thread_id.clone()).or_default();
+        let position =
+            thread.partition_point(|other| self.messages[other].sort_key() <= message.sort_key());
+        thread.insert(position, message.id.clone());
+        self.messages.insert(message.id.clone(), message);
+    }
+
+    /// Puts back a message a backing store kept, with the ID, thread and history position it had.
+    /// Nothing is recorded in the history.
+    pub fn restore(&mut self, kept: Restored) -> Result<()> {
+        let mime = mime::parse(&kept.raw, &kept.id)
+            .ok_or_else(|| Failure::invalid_argument("Invalid raw message"))?;
+        // New IDs must not repeat a restored one's low bits.
+        self.sequence = self.sequence.max(numeric_id(&kept.id) & 0xF_FFFF);
+        self.place(StoredMessage {
+            id: kept.id,
+            thread_id: kept.thread_id,
+            labels: kept.labels,
+            internal_date: kept.internal_date,
+            history_id: kept.history_id,
+            raw: kept.raw,
+            mime,
+        });
+        Ok(())
+    }
+
+    /// Swaps in the bytes of a message that was held without its body. Nothing is recorded.
+    pub fn replace_raw(&mut self, id: &str, raw: Vec<u8>) -> Result<()> {
+        let mime = mime::parse(&raw, id)
+            .ok_or_else(|| Failure::invalid_argument("Invalid raw message"))?;
+        let message = self.messages.get_mut(id).ok_or_else(Failure::not_found)?;
+        message.raw = raw;
+        message.mime = mime;
+        Ok(())
     }
 
     fn resolve_thread(&self, threading: &Threading, mime: &Parsed) -> Result<Option<String>> {

@@ -43,6 +43,21 @@ impl HistoryLog {
         }
     }
 
+    /// A log that carries on from one a backing store kept: `records` ordered by ID, none older
+    /// than `floor`.
+    pub fn from_parts(floor: u64, current: u64, records: Vec<Record>) -> Self {
+        Self {
+            records,
+            floor,
+            current,
+        }
+    }
+
+    /// Oldest `startHistoryId` still served.
+    pub fn floor(&self) -> u64 {
+        self.floor
+    }
+
     /// The mailbox's current history ID.
     pub fn current(&self) -> u64 {
         self.current
