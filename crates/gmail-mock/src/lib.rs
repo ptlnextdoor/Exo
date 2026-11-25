@@ -20,6 +20,7 @@
 
 mod admin;
 mod calendar;
+pub mod engine;
 mod error;
 mod fixtures;
 mod http;

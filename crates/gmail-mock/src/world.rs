@@ -212,8 +212,12 @@ pub struct App {
 
 impl App {
     pub fn new(config: &Config) -> Self {
+        Self::from_world(crate::fixtures::world(config))
+    }
+
+    pub fn from_world(world: World) -> Self {
         Self {
-            world: Mutex::new(crate::fixtures::world(config)),
+            world: Mutex::new(world),
         }
     }
 
