@@ -1,0 +1,45 @@
+name: exo-imap
+
+# The IMAP facade, tested against a fake server and against GreenMail (a real IMAP and SMTP server).
+
+on:
+  pull_request:
+    paths:
+      - 'crates/exo-imap/**'
+      - 'crates/gmail-mock/**'
+      - 'crates/gmail/**'
+      - 'crates/exo-store/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/exo-imap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GREENMAIL_VERSION: 2.1.3
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update
+
+      - name: Start GreenMail
+        run: |
+          curl -fsSL -o greenmail.jar \
+            "https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/${GREENMAIL_VERSION}/greenmail-standalone-${GREENMAIL_VERSION}.jar"
+          java -Dgreenmail.setup.test.imap -Dgreenmail.setup.test.smtp \
+            -Dgreenmail.hostname=127.0.0.1 -Dgreenmail.auth.disabled \
+            -jar greenmail.jar > greenmail.log 2>&1 &
+          timeout 60 bash -c 'until (echo > /dev/tcp/127.0.0.1/3143) 2>/dev/null; do sleep 1; done'
+
+      - name: Test
+        run: cargo test -p exo-imap -- --include-ignored
